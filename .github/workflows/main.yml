@@ -1,1251 +1,551 @@
 name: Kenyuko_Web_Desktop
 
-"on":
-workflow_dispatch:
-push:
-branches:
-- main
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 concurrency:
-group: kenyuko-web-desktop
-cancel-in-progress: true
+  group: kenyuko-web-desktop
+  cancel-in-progress: true
 
 jobs:
-desktop:
-runs-on: windows-latest
-timeout-minutes: 91
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 91
 
-```
-steps:
+    steps:
+      - name: 0. Bắt đầu timer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
 
-  # ==========================================================
-  # 0. TIMER
-  # ==========================================================
-  - name: 0. Bắt đầu timer
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
+          $start = (Get-Date).ToUniversalTime()
+          $end   = $start.AddMinutes(90)
 
-      $start = (Get-Date).ToUniversalTime()
-      $end   = $start.AddMinutes(90)
+          "START_TIME=$($start.ToString('o'))" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "END_TIME=$($end.ToString('o'))" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-      "START_TIME=$($start.ToString('o'))" |
-        Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "============================================"
+          Write-Host "       KENYUKO WEB DESKTOP START"
+          Write-Host "============================================"
+          Write-Host "Start : $($start.ToLocalTime())"
+          Write-Host "End   : $($end.ToLocalTime())"
+          Write-Host "Time  : 90 minutes"
+          Write-Host "============================================"
 
-      "END_TIME=$($end.ToString('o'))" |
-        Out-File $env:GITHUB_ENV -Append -Encoding utf8
+      - name: 1. Tạo VNC password
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
 
-      Write-Host "============================================"
-      Write-Host "       KENYUKO WEB DESKTOP START"
-      Write-Host "============================================"
-      Write-Host "Start : $($start.ToLocalTime())"
-      Write-Host "End   : $($end.ToLocalTime())"
-      Write-Host "Time  : 90 minutes"
-      Write-Host "============================================"
+          $chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+          $password = -join (1..8 | ForEach-Object {
+            $chars[Get-Random -Minimum 0 -Maximum $chars.Length]
+          })
 
+          "VNC_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "VNC_PASSWORD=$password"
+          Write-Host "[OK] VNC password created."
 
-  # ==========================================================
-  # 1. VNC PASSWORD
-  # ==========================================================
-  - name: 1. Tạo VNC password
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
+      - name: 2. Tải TightVNC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
 
-      $chars =
-        "ABCDEFGHJKLMNPQRSTUVWXYZ" +
-        "abcdefghijkmnopqrstuvwxyz" +
-        "23456789"
+          $page = Invoke-WebRequest -Uri "https://www.tightvnc.com/download.php" -UseBasicParsing
 
-      $password = -join (
-        1..8 | ForEach-Object {
-          $chars[
-            Get-Random `
-              -Minimum 0 `
-              -Maximum $chars.Length
-          ]
-        }
-      )
+          $link = $page.Links |
+            Where-Object { $_.href -match '(?i)tightvnc.*64bit.*\.msi' } |
+            Select-Object -First 1
 
-      "VNC_PASSWORD=$password" |
-        Out-File `
-          $env:GITHUB_ENV `
-          -Append `
-          -Encoding utf8
+          if (-not $link) {
+            throw "Không tìm thấy TightVNC 64-bit MSI trên trang download."
+          }
 
-      Write-Host "[OK] VNC password created."
+          $uri = $link.href
+          if ($uri -notmatch '^https?://') {
+            $uri = [System.Uri]::new([System.Uri]::new("https://www.tightvnc.com/"), $uri).AbsoluteUri
+          }
 
+          Write-Host "TightVNC URL: $uri"
 
-  # ==========================================================
-  # 2. DOWNLOAD TIGHTVNC
-  # ==========================================================
-  - name: 2. Tải TightVNC
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
+          $msi = Join-Path $env:RUNNER_TEMP "tightvnc.msi"
+          Invoke-WebRequest -Uri $uri -OutFile $msi -UseBasicParsing
 
-      Write-Host "Downloading TightVNC..."
+          if (-not (Test-Path $msi)) {
+            throw "TightVNC MSI không tồn tại sau khi tải."
+          }
 
-      $page = Invoke-WebRequest `
-        -Uri "https://www.tightvnc.com/download.php" `
-        -UseBasicParsing
+          "TIGHTVNC_MSI=$msi" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "[OK] TightVNC downloaded."
 
-      $link = $page.Links |
-        Where-Object {
-          $_.href -match '(?i)tightvnc.*64bit.*\.msi'
-        } |
-        Select-Object -First 1
+      - name: 3. Cài TightVNC Server
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
 
-      if (-not $link) {
-        throw "Không tìm thấy TightVNC 64-bit MSI."
-      }
+          $args = @(
+            "/i",
+            "`"$env:TIGHTVNC_MSI`"",
+            "/quiet",
+            "/norestart",
+            "SET_USEVNCAUTHENTICATION=1",
+            "VALUE_OF_USEVNCAUTHENTICATION=1",
+            "SET_PASSWORD=1",
+            "VALUE_OF_PASSWORD=$env:VNC_PASSWORD",
+            "SET_VIEWONLYPASSWORD=1",
+            "VALUE_OF_VIEWONLYPASSWORD=$env:VNC_PASSWORD"
+          )
 
-      $uri = $link.href
+          $installer = Start-Process -FilePath "msiexec.exe" -ArgumentList $args -Wait -PassThru -NoNewWindow
 
-      if ($uri -notmatch '^https?://') {
-        $uri = [System.Uri]::new(
-          [System.Uri]::new(
-            "https://www.tightvnc.com/"
-          ),
-          $uri
-        ).AbsoluteUri
-      }
+          if ($installer.ExitCode -ne 0) {
+            throw "TightVNC installation failed. ExitCode=$($installer.ExitCode)"
+          }
 
-      $msi =
-        Join-Path `
-          $env:RUNNER_TEMP `
-          "tightvnc.msi"
+          Write-Host "[OK] TightVNC installed."
 
-      Invoke-WebRequest `
-        -Uri $uri `
-        -OutFile $msi `
-        -UseBasicParsing
+      - name: 4. Khởi động VNC Server
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
 
-      if (-not (Test-Path $msi)) {
-        throw "TightVNC MSI không tồn tại."
-      }
+          Start-Sleep -Seconds 5
 
-      "TIGHTVNC_MSI=$msi" |
-        Out-File `
-          $env:GITHUB_ENV `
-          -Append `
-          -Encoding utf8
+          $services = Get-Service | Where-Object { $_.Name -match '(?i)tightvnc|tvnserver' }
+          if (-not $services) {
+            throw "Không tìm thấy TightVNC service."
+          }
 
-      Write-Host "[OK] TightVNC downloaded."
+          foreach ($svc in $services) {
+            Write-Host "Service: $($svc.Name) Status=$($svc.Status)"
+            try { Set-Service -Name $svc.Name -StartupType Automatic } catch {}
+            if ($svc.Status -ne "Running") {
+              try { Start-Service -Name $svc.Name -ErrorAction Stop } catch {
+                Write-Host "Start-Service failed: $($_.Exception.Message)"
+              }
+            }
+          }
 
+          Start-Sleep -Seconds 5
 
-  # ==========================================================
-  # 3. INSTALL TIGHTVNC
-  # ==========================================================
-  - name: 3. Cài TightVNC Server
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
+          $vncPort = $null
+          foreach ($port in @(5900,5901)) {
+            $test = Test-NetConnection 127.0.0.1 -Port $port -WarningAction SilentlyContinue
+            if ($test.TcpTestSucceeded) {
+              $vncPort = $port
+              break
+            }
+          }
 
-      $args = @(
-        "/i",
-        "`"$env:TIGHTVNC_MSI`"",
-        "/quiet",
-        "/norestart",
+          if (-not $vncPort) {
+            Write-Host "===== VNC SERVICES ====="
+            Get-Service | Where-Object { $_.Name -match '(?i)tightvnc|tvnserver' } | Format-Table Name,Status
+            throw "Không tìm thấy VNC listener trên 5900 hoặc 5901."
+          }
 
-        "SET_USEVNCAUTHENTICATION=1",
-        "VALUE_OF_USEVNCAUTHENTICATION=1",
+          "VNC_PORT=$vncPort" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-        "SET_PASSWORD=1",
-        "VALUE_OF_PASSWORD=$env:VNC_PASSWORD",
+          Write-Host "============================================"
+          Write-Host "VNC SERVER READY"
+          Write-Host "Port: $vncPort"
+          Write-Host "============================================"
 
-        "SET_VIEWONLYPASSWORD=1",
-        "VALUE_OF_VIEWONLYPASSWORD=$env:VNC_PASSWORD"
-      )
+      - name: 5. Tải noVNC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
 
-      $installer =
-        Start-Process `
-          -FilePath "msiexec.exe" `
-          -ArgumentList $args `
-          -Wait `
-          -PassThru `
-          -NoNewWindow
+          $dir = Join-Path $env:RUNNER_TEMP "noVNC"
+          if (Test-Path $dir) {
+            Remove-Item $dir -Recurse -Force
+          }
 
-      if ($installer.ExitCode -ne 0) {
-        throw `
-          "TightVNC installation failed. ExitCode=$($installer.ExitCode)"
-      }
+          git clone --depth 1 https://github.com/novnc/noVNC.git $dir
 
-      Write-Host "[OK] TightVNC installed."
+          if (-not (Test-Path "$dir\vnc.html")) {
+            throw "noVNC vnc.html không tồn tại."
+          }
 
+          if (-not (Test-Path "$dir\core\rfb.js")) {
+            throw "noVNC core/rfb.js không tồn tại."
+          }
 
-  # ==========================================================
-  # 4. START VNC
-  # ==========================================================
-  - name: 4. Khởi động VNC Server
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
+          "NOVNC_DIR=$dir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "[OK] noVNC ready."
 
-      Start-Sleep -Seconds 5
+      - name: 6. Cài websockify
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          py -m pip install --upgrade pip
+          py -m pip install websockify
+          if ($LASTEXITCODE -ne 0) {
+            throw "Cài websockify thất bại."
+          }
+          Write-Host "[OK] websockify installed."
 
-      $services =
-        Get-Service |
-        Where-Object {
-          $_.Name -match '(?i)tightvnc|tvnserver'
-        }
+      - name: 7. Tạo Web Desktop
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
 
-      if (-not $services) {
-        throw "Không tìm thấy TightVNC service."
-      }
+          $webDir = Join-Path $env:RUNNER_TEMP "web"
+          if (Test-Path $webDir) {
+            Remove-Item $webDir -Recurse -Force
+          }
 
-      foreach ($svc in $services) {
+          New-Item -ItemType Directory -Path $webDir -Force | Out-Null
 
-        Write-Host `
-          "Service: $($svc.Name) Status=$($svc.Status)"
+          Copy-Item "$env:NOVNC_DIR\*" "$webDir\" -Recurse -Force
 
-        try {
-          Set-Service `
-            -Name $svc.Name `
-            -StartupType Automatic
-        }
-        catch {
-        }
-
-        if ($svc.Status -ne "Running") {
-
+          $html = @'
+          <!doctype html>
+          <html lang="en">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>Kenyuko Desktop</title>
+          <style>
+          html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:#000}
+          #screen{width:100%;height:100%}
+          #loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#111;color:#fff;font-family:Arial,sans-serif;font-size:18px;z-index:1000}
+          #error{display:none;position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);max-width:80%;padding:24px;border-radius:10px;background:#222;color:#fff;font-family:Arial,sans-serif;white-space:pre-wrap;z-index:2000}
+          </style>
+          </head>
+          <body>
+          <div id="loading">Đang kết nối desktop...</div>
+          <div id="error"></div>
+          <div id="screen"></div>
+          <script type="module">
+          import RFB from "./core/rfb.js";
+          const screen=document.getElementById("screen");
+          const loading=document.getElementById("loading");
+          const errorBox=document.getElementById("error");
+          const scheme=location.protocol === "https:" ? "wss://" : "ws://";
+          const websocketUrl=scheme + location.host + "/websockify";
           try {
-            Start-Service `
-              -Name $svc.Name `
-              -ErrorAction Stop
+            const rfb=new RFB(screen,websocketUrl,{credentials:{password:"__VNC_PASSWORD__"},shared:true});
+            rfb.scaleViewport=true;
+            rfb.resizeSession=false;
+            rfb.showDotCursor=true;
+            rfb.addEventListener("connect",()=>{loading.style.display="none";});
+            rfb.addEventListener("credentialsrequired",()=>{rfb.sendCredentials({password:"__VNC_PASSWORD__"});});
+            rfb.addEventListener("disconnect",()=>{loading.style.display="flex";loading.textContent="Desktop đã ngắt kết nối.";});
+            window.rfb=rfb;
+          } catch(error) {
+            console.error(error);
+            loading.style.display="none";
+            errorBox.style.display="block";
+            errorBox.textContent="Không thể kết nối desktop:\n"+error.message;
           }
-          catch {
-            Write-Host `
-              "Start-Service failed: $($_.Exception.Message)"
+          </script>
+          </body>
+          </html>
+          '@
+
+          $html = $html.Replace("__VNC_PASSWORD__", $env:VNC_PASSWORD)
+          $html | Out-File "$webDir\index.html" -Encoding utf8
+
+          if (-not (Test-Path "$webDir\index.html")) {
+            throw "Không tạo được index.html."
           }
-        }
-      }
 
-      Start-Sleep -Seconds 5
-
-      $vncPort = $null
-
-      foreach ($port in @(5900,5901)) {
-
-        $test =
-          Test-NetConnection `
-            127.0.0.1 `
-            -Port $port `
-            -WarningAction SilentlyContinue
-
-        if ($test.TcpTestSucceeded) {
-          $vncPort = $port
-          break
-        }
-      }
-
-      if (-not $vncPort) {
-
-        Write-Host ""
-        Write-Host "===== VNC SERVICES ====="
-
-        Get-Service |
-          Where-Object {
-            $_.Name -match '(?i)tightvnc|tvnserver'
-          } |
-          Format-Table Name,Status
-
-        throw `
-          "Không tìm thấy VNC listener trên 5900 hoặc 5901."
-      }
-
-      "VNC_PORT=$vncPort" |
-        Out-File `
-          $env:GITHUB_ENV `
-          -Append `
-          -Encoding utf8
-
-      Write-Host ""
-      Write-Host "============================================"
-      Write-Host "VNC SERVER READY"
-      Write-Host "Port: $vncPort"
-      Write-Host "============================================"
-
-
-  # ==========================================================
-  # 5. DOWNLOAD NOVNC
-  # ==========================================================
-  - name: 5. Tải noVNC
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
-
-      $dir =
-        Join-Path `
-          $env:RUNNER_TEMP `
-          "noVNC"
-
-      if (Test-Path $dir) {
-        Remove-Item `
-          $dir `
-          -Recurse `
-          -Force
-      }
-
-      git clone `
-        --depth 1 `
-        https://github.com/novnc/noVNC.git `
-        $dir
-
-      if (-not (Test-Path "$dir\vnc.html")) {
-        throw "noVNC vnc.html không tồn tại."
-      }
-
-      if (-not (Test-Path "$dir\core\rfb.js")) {
-        throw "noVNC core/rfb.js không tồn tại."
-      }
-
-      "NOVNC_DIR=$dir" |
-        Out-File `
-          $env:GITHUB_ENV `
-          -Append `
-          -Encoding utf8
-
-      Write-Host "[OK] noVNC ready."
-
-
-  # ==========================================================
-  # 6. INSTALL WEBSOCKIFY
-  # ==========================================================
-  - name: 6. Cài websockify
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
-
-      py -m pip install --upgrade pip
-
-      py -m pip install websockify
-
-      if ($LASTEXITCODE -ne 0) {
-        throw "Cài websockify thất bại."
-      }
-
-      Write-Host "[OK] websockify installed."
-
-
-  # ==========================================================
-  # 7. CREATE WEB APP
-  # ==========================================================
-  - name: 7. Tạo Web Desktop
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
-
-      $webDir =
-        Join-Path `
-          $env:RUNNER_TEMP `
-          "web"
-
-      if (Test-Path $webDir) {
-        Remove-Item `
-          $webDir `
-          -Recurse `
-          -Force
-      }
-
-      New-Item `
-        -ItemType Directory `
-        -Path $webDir `
-        -Force |
-        Out-Null
-
-      Copy-Item `
-        "$env:NOVNC_DIR\*" `
-        "$webDir\" `
-        -Recurse `
-        -Force
-
-      $password =
-        $env:VNC_PASSWORD
-
-      $html = @"
-```
-
-<!doctype html>
-
-<html lang="en">
-
-<head>
-
-<meta charset="utf-8">
-
-<meta
-name="viewport"
-content="width=device-width,initial-scale=1">
-
-<title>Kenyuko Desktop</title>
-
-<style>
-
-html,
-body {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  overflow: hidden;
-  background: #000;
-}
-
-#screen {
-  width: 100%;
-  height: 100%;
-}
-
-#loading {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #111;
-  color: #fff;
-  font-family: Arial,sans-serif;
-  font-size: 18px;
-  z-index: 1000;
-}
-
-#error {
-  display: none;
-  position: fixed;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%,-50%);
-  max-width: 80%;
-  padding: 24px;
-  border-radius: 10px;
-  background: #222;
-  color: #fff;
-  font-family: Arial,sans-serif;
-  white-space: pre-wrap;
-  z-index: 2000;
-}
-
-</style>
-
-</head>
-
-<body>
-
-<div id="loading">
-  Connecting to desktop...
-</div>
-
-<div id="error"></div>
-
-<div id="screen"></div>
-
-<script type="module">
-
-import RFB from "./core/rfb.js";
-
-const screen =
-  document.getElementById("screen");
-
-const loading =
-  document.getElementById("loading");
-
-const errorBox =
-  document.getElementById("error");
-
-const protocol =
-  location.protocol === "https:"
-    ? "wss://"
-    : "ws://";
-
-const websocketUrl =
-  protocol +
-  location.host +
-  "/websockify";
-
-console.log(
-  "WebSocket:",
-  websocketUrl
-);
-
-try {
-
-  const rfb =
-    new RFB(
-      screen,
-      websocketUrl,
-      {
-        credentials: {
-          password: "$password"
-        },
-
-        shared: true
-      }
-    );
-
-  rfb.scaleViewport = true;
-
-  rfb.resizeSession = false;
-
-  rfb.showDotCursor = true;
-
-  rfb.addEventListener(
-    "connect",
-    () => {
-
-      console.log(
-        "VNC connected"
-      );
-
-      loading.style.display =
-        "none";
-    }
-  );
-
-  rfb.addEventListener(
-    "credentialsrequired",
-    () => {
-
-      rfb.sendCredentials(
-        {
-          password: "$password"
-        }
-      );
-
-    }
-  );
-
-  rfb.addEventListener(
-    "disconnect",
-    event => {
-
-      console.log(
-        "VNC disconnected",
-        event
-      );
-
-      loading.style.display =
-        "flex";
-
-      loading.textContent =
-        "Desktop đã ngắt kết nối.";
-    }
-  );
-
-  window.rfb = rfb;
-
-}
-catch (error) {
-
-  console.error(error);
-
-  loading.style.display =
-    "none";
-
-  errorBox.style.display =
-    "block";
-
-  errorBox.textContent =
-    "Không thể kết nối desktop:\n" +
-    error.message;
-}
-
-</script>
-
-</body>
-
-</html>
-"@
-
-```
-      $html |
-        Out-File `
-          "$webDir\index.html" `
-          -Encoding utf8
-
-      if (-not (Test-Path "$webDir\index.html")) {
-        throw "Không tạo được index.html."
-      }
-
-      "WEB_DIR=$webDir" |
-        Out-File `
-          $env:GITHUB_ENV `
-          -Append `
-          -Encoding utf8
-
-      Write-Host "[OK] Web desktop created."
-
-
-  # ==========================================================
-  # 8. START WEBSOCKIFY
-  # ==========================================================
-  - name: 8. Khởi động WebSocket bridge
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
-
-      $log =
-        Join-Path `
-          $env:RUNNER_TEMP `
-          "websockify.log"
-
-      $errLog =
-        Join-Path `
-          $env:RUNNER_TEMP `
-          "websockify-error.log"
-
-      if (Test-Path $log) {
-        Remove-Item `
-          $log `
-          -Force
-      }
-
-      if (Test-Path $errLog) {
-        Remove-Item `
-          $errLog `
-          -Force
-      }
-
-      $port =
-        [int]$env:VNC_PORT
-
-      Write-Host ""
-      Write-Host "Starting websockify..."
-      Write-Host "Web port : 6080"
-      Write-Host "VNC port : $port"
-
-      $args = @(
-        "-m",
-        "websockify",
-        "--web",
-        "`"$env:WEB_DIR`"",
-        "6080",
-        "127.0.0.1:$port"
-      )
-
-      $process =
-        Start-Process `
-          -FilePath "py" `
-          -ArgumentList $args `
-          -RedirectStandardOutput $log `
-          -RedirectStandardError $errLog `
-          -PassThru `
-          -WindowStyle Hidden
-
-      Start-Sleep -Seconds 5
-
-      if ($process.HasExited) {
-
-        Write-Host ""
-        Write-Host "===== WEBSOCKIFY STDOUT ====="
-
-        if (Test-Path $log) {
-          Get-Content $log
-        }
-
-        Write-Host ""
-        Write-Host "===== WEBSOCKIFY STDERR ====="
-
-        if (Test-Path $errLog) {
-          Get-Content $errLog
-        }
-
-        throw `
-          "websockify exited. ExitCode=$($process.ExitCode)"
-      }
-
-      $test =
-        Test-NetConnection `
-          127.0.0.1 `
-          -Port 6080 `
-          -WarningAction SilentlyContinue
-
-      if (-not $test.TcpTestSucceeded) {
-
-        Write-Host ""
-        Write-Host "===== WEBSOCKIFY STDOUT ====="
-
-        if (Test-Path $log) {
-          Get-Content $log
-        }
-
-        Write-Host ""
-        Write-Host "===== WEBSOCKIFY STDERR ====="
-
-        if (Test-Path $errLog) {
-          Get-Content $errLog
-        }
-
-        throw `
-          "websockify không listen được trên 6080."
-      }
-
-      Write-Host ""
-      Write-Host "============================================"
-      Write-Host "WEBSOCKIFY READY"
-      Write-Host "http://127.0.0.1:6080/"
-      Write-Host "============================================"
-
-
-  # ==========================================================
-  # 9. LOCAL WEB TEST
-  # ==========================================================
-  - name: 9. Kiểm tra Web Desktop local
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
-
-      Start-Sleep -Seconds 2
-
-      try {
-
-        $response =
-          Invoke-WebRequest `
+          "WEB_DIR=$webDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "[OK] Web desktop created."
+
+      - name: 8. Khởi động WebSocket bridge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $log = Join-Path $env:RUNNER_TEMP "websockify.log"
+          $errLog = Join-Path $env:RUNNER_TEMP "websockify-error.log"
+
+          Remove-Item $log,$errLog -Force -ErrorAction SilentlyContinue
+
+          $port = [int]$env:VNC_PORT
+          $args = @(
+            "-m",
+            "websockify",
+            "--web",
+            "`"$env:WEB_DIR`"",
+            "6080",
+            "127.0.0.1:$port"
+          )
+
+          $process = Start-Process `
+            -FilePath "py" `
+            -ArgumentList $args `
+            -RedirectStandardOutput $log `
+            -RedirectStandardError $errLog `
+            -PassThru `
+            -WindowStyle Hidden
+
+          Start-Sleep -Seconds 5
+
+          if ($process.HasExited) {
+            Write-Host "===== WEBSOCKIFY STDOUT ====="
+            if (Test-Path $log) { Get-Content $log }
+            Write-Host "===== WEBSOCKIFY STDERR ====="
+            if (Test-Path $errLog) { Get-Content $errLog }
+            throw "websockify exited. ExitCode=$($process.ExitCode)"
+          }
+
+          $test = Test-NetConnection 127.0.0.1 -Port 6080 -WarningAction SilentlyContinue
+          if (-not $test.TcpTestSucceeded) {
+            Write-Host "===== WEBSOCKIFY STDOUT ====="
+            if (Test-Path $log) { Get-Content $log }
+            Write-Host "===== WEBSOCKIFY STDERR ====="
+            if (Test-Path $errLog) { Get-Content $errLog }
+            throw "websockify không listen được trên 6080."
+          }
+
+          Write-Host "============================================"
+          Write-Host "WEBSOCKIFY READY"
+          Write-Host "http://127.0.0.1:6080/"
+          Write-Host "============================================"
+
+      - name: 9. Kiểm tra Web Desktop local
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $response = Invoke-WebRequest `
             -Uri "http://127.0.0.1:6080/" `
             -UseBasicParsing `
             -TimeoutSec 20
 
-        if ($response.StatusCode -ne 200) {
-          throw `
-            "HTTP status=$($response.StatusCode)"
-        }
-
-        Write-Host `
-          "[OK] Local web HTTP 200"
-
-      }
-      catch {
-
-        Write-Host ""
-        Write-Host "===== LOCAL WEB FAILED ====="
-
-        $log =
-          Join-Path `
-            $env:RUNNER_TEMP `
-            "websockify.log"
-
-        $err =
-          Join-Path `
-            $env:RUNNER_TEMP `
-            "websockify-error.log"
-
-        if (Test-Path $log) {
-          Get-Content $log
-        }
-
-        if (Test-Path $err) {
-          Get-Content $err
-        }
-
-        throw `
-          "Local web test failed: $($_.Exception.Message)"
-      }
-
-
-  # ==========================================================
-  # 10. DOWNLOAD CLOUDFLARED
-  # ==========================================================
-  - name: 10. Tải cloudflared
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
-
-      $cf =
-        Join-Path `
-          $env:RUNNER_TEMP `
-          "cloudflared.exe"
-
-      $url =
-        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-
-      Invoke-WebRequest `
-        -Uri $url `
-        -OutFile $cf `
-        -UseBasicParsing
-
-      if (-not (Test-Path $cf)) {
-        throw "cloudflared.exe không tồn tại."
-      }
-
-      & $cf --version
-
-      if ($LASTEXITCODE -ne 0) {
-        throw "cloudflared không chạy được."
-      }
-
-      "CLOUDFLARED=$cf" |
-        Out-File `
-          $env:GITHUB_ENV `
-          -Append `
-          -Encoding utf8
-
-      Write-Host "[OK] cloudflared ready."
-
-
-  # ==========================================================
-  # 11. CLEAN CLOUDFLARE CONFIG
-  # ==========================================================
-  - name: 11. Chuẩn bị Quick Tunnel
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
-
-      $dir =
-        Join-Path `
-          $env:USERPROFILE `
-          ".cloudflared"
-
-      if (Test-Path $dir) {
-
-        foreach (
-          $name in @(
-            "config.yml",
-            "config.yaml"
-          )
-        ) {
-
-          $file =
-            Join-Path `
-              $dir `
-              $name
-
-          if (Test-Path $file) {
-
-            Move-Item `
-              $file `
-              "$file.disabled" `
-              -Force
-
-            Write-Host `
-              "Disabled $name"
+          if ($response.StatusCode -ne 200) {
+            throw "Local web returned HTTP $($response.StatusCode)."
           }
-        }
-      }
 
-      Write-Host "[OK] Cloudflare environment ready."
+          Write-Host "[OK] Local web HTTP 200."
 
+      - name: 10. Tải cloudflared
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
 
-  # ==========================================================
-  # 12. CLOUDFLARE DNS
-  # ==========================================================
-  - name: 12. Kiểm tra Cloudflare DNS
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
+          $cf = Join-Path $env:RUNNER_TEMP "cloudflared.exe"
+          $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 
-      Resolve-DnsName `
-        api.trycloudflare.com `
-        -ErrorAction Stop |
-        Select-Object `
-          -First 5 `
-          Name,
-          Type,
-          IPAddress |
-        Format-Table
+          Invoke-WebRequest -Uri $url -OutFile $cf -UseBasicParsing
 
-      Write-Host "[OK] Cloudflare DNS works."
+          if (-not (Test-Path $cf)) {
+            throw "cloudflared.exe không tồn tại."
+          }
 
+          & $cf --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "cloudflared không chạy được."
+          }
 
-  # ==========================================================
-  # 13. CREATE QUICK TUNNEL
-  # ==========================================================
-  - name: 13. Tạo Cloudflare Quick Tunnel
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
+          "CLOUDFLARED=$cf" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "[OK] cloudflared ready."
 
-      $logDir =
-        Join-Path `
-          $env:RUNNER_TEMP `
-          "cloudflared"
+      - name: 11. Chuẩn bị Quick Tunnel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
 
-      if (Test-Path $logDir) {
-        Remove-Item `
-          $logDir `
-          -Recurse `
-          -Force
-      }
-
-      New-Item `
-        -ItemType Directory `
-        -Path $logDir `
-        -Force |
-        Out-Null
-
-      $stdoutLog =
-        Join-Path `
-          $logDir `
-          "stdout.log"
-
-      $stderrLog =
-        Join-Path `
-          $logDir `
-          "stderr.log"
-
-      $psi =
-        New-Object `
-          System.Diagnostics.ProcessStartInfo
-
-      $psi.FileName =
-        $env:CLOUDFLARED
-
-      $psi.Arguments =
-        "tunnel --no-autoupdate --url http://127.0.0.1:6080"
-
-      $psi.UseShellExecute =
-        $false
-
-      $psi.CreateNoWindow =
-        $true
-
-      $psi.RedirectStandardOutput =
-        $true
-
-      $psi.RedirectStandardError =
-        $true
-
-      $process =
-        New-Object `
-          System.Diagnostics.Process
-
-      $process.StartInfo =
-        $psi
-
-      $process.Start() |
-        Out-Null
-
-      $cfPid =
-        $process.Id
-
-      Write-Host ""
-      Write-Host "cloudflared PID: $cfPid"
-      Write-Host ""
-
-      # Close our direct output readers immediately.
-      # cloudflared continues running.
-      $process.BeginOutputReadLine()
-      $process.BeginErrorReadLine()
-
-      # Also poll process output log independently below.
-      $publicUrl = $null
-
-      $pattern =
-        'https://[A-Za-z0-9-]+\.trycloudflare\.com'
-
-      $deadline =
-        (Get-Date).AddSeconds(180)
-
-      Write-Host `
-        "Waiting for Cloudflare tunnel..."
-
-      while (
-        (Get-Date) -lt $deadline
-      ) {
-
-        Start-Sleep -Seconds 2
-
-        # Try stdout
-        if (Test-Path $stdoutLog) {
-
-          $text =
-            Get-Content `
-              $stdoutLog `
-              -Raw `
-              -ErrorAction SilentlyContinue
-
-          if ($text) {
-
-            $match =
-              [regex]::Match(
-                $text,
-                $pattern
-              )
-
-            if ($match.Success) {
-              $publicUrl =
-                $match.Value
-              break
+          $dir = Join-Path $env:USERPROFILE ".cloudflared"
+          if (Test-Path $dir) {
+            foreach ($name in @("config.yml","config.yaml")) {
+              $file = Join-Path $dir $name
+              if (Test-Path $file) {
+                Move-Item $file "$file.disabled" -Force
+                Write-Host "Disabled $name"
+              }
             }
           }
-        }
 
-        # Try stderr
-        if (Test-Path $stderrLog) {
+          Write-Host "[OK] Quick Tunnel environment ready."
 
-          $text =
-            Get-Content `
-              $stderrLog `
-              -Raw `
-              -ErrorAction SilentlyContinue
+      - name: 12. Kiểm tra Cloudflare DNS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Resolve-DnsName api.trycloudflare.com -ErrorAction Stop | Select-Object -First 5 Name,Type,IPAddress | Format-Table
+          Write-Host "[OK] Cloudflare DNS works."
 
-          if ($text) {
+      - name: 13. Tạo Tunnel và giữ Desktop 90 phút
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
 
-            $match =
-              [regex]::Match(
-                $text,
-                $pattern
-              )
+          $logDir = Join-Path $env:RUNNER_TEMP "cloudflared"
+          New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
-            if ($match.Success) {
-              $publicUrl =
-                $match.Value
-              break
+          $stdoutLog = Join-Path $logDir "stdout.log"
+          $stderrLog = Join-Path $logDir "stderr.log"
+          Remove-Item $stdoutLog,$stderrLog -Force -ErrorAction SilentlyContinue
+
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = $env:CLOUDFLARED
+          $psi.Arguments = "tunnel --no-autoupdate --url http://127.0.0.1:6080"
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+
+          $cfProcess = New-Object System.Diagnostics.Process
+          $cfProcess.StartInfo = $psi
+          $cfProcess.EnableRaisingEvents = $true
+
+          $script:PublicUrl = $null
+          $pattern = 'https://[A-Za-z0-9-]+\.trycloudflare\.com'
+
+          $stdoutHandler = {
+            param($sender,$event)
+            if ($null -eq $event.Data) { return }
+            $line = [string]$event.Data
+            Add-Content -Path $stdoutLog -Value $line -Encoding utf8
+            Write-Host "[cloudflared] $line"
+            if (-not $script:PublicUrl) {
+              $m = [regex]::Match($line,$pattern)
+              if ($m.Success) { $script:PublicUrl = $m.Value }
             }
           }
-        }
 
-        if ($process.HasExited) {
-          break
-        }
-
-        Write-Host `
-          "Waiting..."
-      }
-
-      # Give the process output stream time to flush.
-      if (-not $publicUrl) {
-
-        Start-Sleep -Seconds 5
-
-        foreach (
-          $file in @(
-            $stdoutLog,
-            $stderrLog
-          )
-        ) {
-
-          if (-not (Test-Path $file)) {
-            continue
-          }
-
-          $text =
-            Get-Content `
-              $file `
-              -Raw `
-              -ErrorAction SilentlyContinue
-
-          if ($text) {
-
-            $match =
-              [regex]::Match(
-                $text,
-                $pattern
-              )
-
-            if ($match.Success) {
-              $publicUrl =
-                $match.Value
-              break
+          $stderrHandler = {
+            param($sender,$event)
+            if ($null -eq $event.Data) { return }
+            $line = [string]$event.Data
+            Add-Content -Path $stderrLog -Value $line -Encoding utf8
+            Write-Host "[cloudflared:stderr] $line"
+            if (-not $script:PublicUrl) {
+              $m = [regex]::Match($line,$pattern)
+              if ($m.Success) { $script:PublicUrl = $m.Value }
             }
           }
-        }
-      }
 
-      if (-not $publicUrl) {
+          $cfProcess.add_OutputDataReceived($stdoutHandler)
+          $cfProcess.add_ErrorDataReceived($stderrHandler)
 
-        Write-Host ""
-        Write-Host "============================================"
-        Write-Host "CLOUDFLARE TUNNEL FAILED"
-        Write-Host "============================================"
-
-        Write-Host ""
-        Write-Host "===== STDOUT ====="
-
-        if (Test-Path $stdoutLog) {
-          Get-Content $stdoutLog
-        }
-        else {
-          Write-Host "(empty)"
-        }
-
-        Write-Host ""
-        Write-Host "===== STDERR ====="
-
-        if (Test-Path $stderrLog) {
-          Get-Content $stderrLog
-        }
-        else {
-          Write-Host "(empty)"
-        }
-
-        if (-not $process.HasExited) {
           try {
-            $process.Kill()
+            $started = $cfProcess.Start()
           }
           catch {
+            throw "Không thể start cloudflared: $($_.Exception.Message)"
           }
-        }
 
-        throw `
-          "Cloudflare Quick Tunnel không tạo được."
-      }
+          if (-not $started) {
+            throw "cloudflared Start() returned false."
+          }
 
-      $publicUrl =
-        $publicUrl.TrimEnd('/')
+          $cfProcess.BeginOutputReadLine()
+          $cfProcess.BeginErrorReadLine()
 
-      "WEB_URL=$publicUrl" |
-        Out-File `
-          $env:GITHUB_ENV `
-          -Append `
-          -Encoding utf8
+          Write-Host "============================================"
+          Write-Host "CLOUDFLARE QUICK TUNNEL STARTED"
+          Write-Host "PID: $($cfProcess.Id)"
+          Write-Host "============================================"
 
-      $publicUrl |
-        Out-File `
-          "$env:RUNNER_TEMP\public-url.txt" `
-          -Encoding utf8
+          $deadline = (Get-Date).AddSeconds(180)
 
-      Write-Host ""
-      Write-Host "============================================"
-      Write-Host "CLOUDFLARE TUNNEL READY"
-      Write-Host "============================================"
-      Write-Host ""
-      Write-Host "PUBLIC URL:"
-      Write-Host ""
-      Write-Host $publicUrl
-      Write-Host ""
+          while ((Get-Date) -lt $deadline) {
+            if ($script:PublicUrl) { break }
+            if ($cfProcess.HasExited) { break }
+            Start-Sleep -Milliseconds 500
+          }
 
+          if (-not $script:PublicUrl) {
+            Start-Sleep -Seconds 3
+          }
 
-  # ==========================================================
-  # 14. KEEP ALIVE
-  # ==========================================================
-  - name: 14. Giữ Desktop hoạt động
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Continue"
+          if (-not $script:PublicUrl) {
+            foreach ($file in @($stdoutLog,$stderrLog)) {
+              if (-not (Test-Path $file)) { continue }
+              $text = Get-Content $file -Raw -ErrorAction SilentlyContinue
+              if ($text) {
+                $m = [regex]::Match($text,$pattern)
+                if ($m.Success) {
+                  $script:PublicUrl = $m.Value
+                  break
+                }
+              }
+            }
+          }
 
-      $start =
-        [DateTime]::Parse(
-          $env:START_TIME
-        ).ToUniversalTime()
+          if (-not $script:PublicUrl) {
+            Write-Host ""
+            Write-Host "============================================"
+            Write-Host "CLOUDFLARE TUNNEL FAILED"
+            Write-Host "============================================"
+            Write-Host "===== STDOUT ====="
+            if (Test-Path $stdoutLog) { Get-Content $stdoutLog } else { Write-Host "(empty)" }
+            Write-Host "===== STDERR ====="
+            if (Test-Path $stderrLog) { Get-Content $stderrLog } else { Write-Host "(empty)" }
+            if (-not $cfProcess.HasExited) {
+              try { $cfProcess.Kill() } catch {}
+            }
+            throw "Không tạo được Cloudflare Quick Tunnel."
+          }
 
-      $end =
-        [DateTime]::Parse(
-          $env:END_TIME
-        ).ToUniversalTime()
+          $publicUrl = $script:PublicUrl.TrimEnd('/')
 
-      Write-Host ""
-      Write-Host "============================================"
-      Write-Host "       KENYUKO DESKTOP ONLINE"
-      Write-Host "============================================"
-      Write-Host ""
-      Write-Host "PUBLIC URL:"
-      Write-Host $env:WEB_URL
-      Write-Host ""
+          "WEB_URL=$publicUrl" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $publicUrl | Out-File "$env:RUNNER_TEMP\public-url.txt" -Encoding utf8
 
-      while ($true) {
-
-        $now =
-          (Get-Date).ToUniversalTime()
-
-        $remaining =
-          ($end - $now).TotalSeconds
-
-        if ($remaining -le 0) {
-          break
-        }
-
-        # VNC
-        $vnc =
-          Test-NetConnection `
-            127.0.0.1 `
-            -Port ([int]$env:VNC_PORT) `
-            -WarningAction SilentlyContinue
-
-        if (-not $vnc.TcpTestSucceeded) {
           Write-Host ""
-          Write-Host "WARNING: VNC stopped."
-          break
-        }
+          Write-Host "============================================"
+          Write-Host "KENYUKO WEB DESKTOP READY"
+          Write-Host "============================================"
+          Write-Host "PUBLIC URL: $publicUrl"
+          Write-Host "VNC PASSWORD: $env:VNC_PASSWORD"
+          Write-Host "============================================"
 
-        # Websockify
-        $web =
-          Test-NetConnection `
-            127.0.0.1 `
-            -Port 6080 `
-            -WarningAction SilentlyContinue
+          try {
+            $publicTest = Invoke-WebRequest -Uri "$publicUrl/" -UseBasicParsing -TimeoutSec 30
+            Write-Host "Public HTTP status: $($publicTest.StatusCode)"
+          }
+          catch {
+            Write-Host "Public HTTP test chưa thành công: $($_.Exception.Message)"
+          }
 
-        if (-not $web.TcpTestSucceeded) {
+          $end = [DateTime]::Parse($env:END_TIME).ToUniversalTime()
+
+          while ($true) {
+            $now = (Get-Date).ToUniversalTime()
+            $remaining = ($end - $now).TotalSeconds
+            if ($remaining -le 0) { break }
+
+            $vnc = Test-NetConnection 127.0.0.1 -Port ([int]$env:VNC_PORT) -WarningAction SilentlyContinue
+            if (-not $vnc.TcpTestSucceeded) {
+              Write-Host "WARNING: VNC port stopped."
+              break
+            }
+
+            $web = Test-NetConnection 127.0.0.1 -Port 6080 -WarningAction SilentlyContinue
+            if (-not $web.TcpTestSucceeded) {
+              Write-Host "WARNING: websockify stopped."
+              break
+            }
+
+            if ($cfProcess.HasExited) {
+              Write-Host "WARNING: cloudflared stopped unexpectedly."
+              break
+            }
+
+            $total = [int][math]::Ceiling($remaining)
+            $minutes = [int][math]::Floor($total / 60)
+            $seconds = $total % 60
+
+            Write-Host ("`rDesktop còn {0:00}:{1:00}     " -f $minutes,$seconds) -NoNewline
+            Start-Sleep -Seconds 5
+          }
+
           Write-Host ""
-          Write-Host "WARNING: websockify stopped."
-          break
-        }
+          Write-Host "Desktop session ending."
 
-        # Cloudflared
-        $cf =
-          Get-Process `
-            -Name "cloudflared" `
-            -ErrorAction SilentlyContinue
-
-        if (-not $cf) {
-          Write-Host ""
-          Write-Host "WARNING: cloudflared stopped."
-          break
-        }
-
-        $total =
-          [int][math]::Ceiling(
-            $remaining
-          )
-
-        $hours =
-          [int][math]::Floor(
-            $total / 3600
-          )
-
-        $minutes =
-          [int][math]::Floor(
-            ($total % 3600) / 60
-          )
-
-        $seconds =
-          $total % 60
-
-        Write-Host (
-          "`rDesktop còn {0:00}:{1:00}:{2:00}     " -f
-          $hours,
-          $minutes,
-          $seconds
-        ) -NoNewline
-
-        Start-Sleep -Seconds 5
-      }
-
-      Write-Host ""
-      Write-Host ""
-      Write-Host "============================================"
-      Write-Host "           DESKTOP STOPPED"
-      Write-Host "============================================"
-
-
-  # ==========================================================
-  # 15. CLEANUP
-  # ==========================================================
-  - name: 15. Dọn dẹp
-    if: always()
-    shell: pwsh
-    run: |
-      Write-Host "Cleanup..."
-
-      Get-Process `
-        -Name "cloudflared" `
-        -ErrorAction SilentlyContinue |
-        Stop-Process `
-          -Force `
-          -ErrorAction SilentlyContinue
-
-      Get-Process `
-        -Name "python" `
-        -ErrorAction SilentlyContinue |
-        Stop-Process `
-          -Force `
-          -ErrorAction SilentlyContinue
-
-      Get-Process `
-        -Name "py" `
-        -ErrorAction SilentlyContinue |
-        Stop-Process `
-          -Force `
-          -ErrorAction SilentlyContinue
-
-      Write-Host "[OK] Cleanup hoàn tất."
-```
+      - name: 14. Dọn dẹp
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process -Name "python" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process -Name "py" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Write-Host "[OK] Cleanup hoàn tất."
