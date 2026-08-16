@@ -35,18 +35,30 @@ jobs:
           Write-Host "Time  : 90 minutes"
           Write-Host "============================================"
 
-      - name: 1. Tạo VNC password
+            - name: 1. Tạo VNC password
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
           $chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
-          $password = -join (1..8 | ForEach-Object {
-            $chars[Get-Random -Minimum 0 -Maximum $chars.Length]
-          })
 
-          "VNC_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "VNC_PASSWORD=$password"
+          $password = ""
+
+          for ($i = 0; $i -lt 8; $i++) {
+            $index = Get-Random -Minimum 0 -Maximum $chars.Length
+            $password += $chars[$index]
+          }
+
+          if ([string]::IsNullOrWhiteSpace($password)) {
+            throw "Không tạo được VNC password."
+          }
+
+          "VNC_PASSWORD=$password" |
+            Out-File `
+              $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
           Write-Host "[OK] VNC password created."
 
       - name: 2. Tải TightVNC
