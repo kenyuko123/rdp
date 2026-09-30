@@ -3,6 +3,10 @@ name: Windows RDP
 on:
   workflow_dispatch:
 
+concurrency:
+  group: windows-rdp
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -195,8 +199,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "[*] Checking TermService..."
-
           $service = Get-Service `
             -Name TermService
 
@@ -205,10 +207,8 @@ jobs:
             Start-Service `
               -Name TermService
 
-            Start-Sleep -Seconds 3
+            Start-Sleep -Seconds 2
           }
-
-          Write-Host "[*] Checking TCP 3389..."
 
           $listening = Get-NetTCPConnection `
             -LocalPort 3389 `
@@ -233,8 +233,7 @@ jobs:
             exit 1
           }
 
-          Write-Host "[OK] TCP 3389 is listening."
-          Write-Host "[OK] RDP user exists."
+          Write-Host "[OK] RDP is ready."
 
 
       # ============================================================
@@ -345,7 +344,9 @@ jobs:
           $borePath = $env:BORE_EXE
 
           if (-not $borePath) {
+
             Write-Host "[ERROR] BORE_EXE is empty."
+
             exit 1
           }
 
@@ -369,7 +370,6 @@ jobs:
               -Force `
               -ErrorAction SilentlyContinue
 
-            Write-Host ""
             Write-Host "[*] Starting Bore..."
             Write-Host "[*] Local target: 127.0.0.1:3389"
 
@@ -390,11 +390,13 @@ jobs:
               -WindowStyle Hidden
 
             if (-not $process) {
+
               Write-Host "[ERROR] Could not start Bore."
+
               return $null
             }
 
-            Write-Host "[OK] Bore PID: $($process.Id)"
+            Write-Host "[OK] Bore started. PID = $($process.Id)"
 
             for ($i = 0; $i -lt 30; $i++) {
 
@@ -403,6 +405,7 @@ jobs:
               $output = ""
 
               if (Test-Path $stdoutFile) {
+
                 $output += Get-Content `
                   -Path $stdoutFile `
                   -Raw `
@@ -410,7 +413,9 @@ jobs:
               }
 
               if (Test-Path $stderrFile) {
+
                 $output += "`n"
+
                 $output += Get-Content `
                   -Path $stderrFile `
                   -Raw `
@@ -485,7 +490,7 @@ jobs:
 
 
           # ========================================================
-          # INITIAL BORE CONNECTION
+          # INITIAL CONNECTION
           # ========================================================
 
           $tunnel = Start-BoreTunnel
@@ -499,24 +504,22 @@ jobs:
 
 
           # ========================================================
-          # 90 MINUTES
-          #
-          # Check every 5 seconds.
-          # This makes workflow cancellation much more responsive.
+          # 90 MINUTE KEEP-ALIVE
+          # No periodic status output.
           # ========================================================
 
           $totalSeconds = 90 * 60
           $elapsed = 0
-          $nextStatus = 0
 
           while ($elapsed -lt $totalSeconds) {
 
-            Start-Sleep -Seconds 5
+            Start-Sleep -Seconds 1
 
-            $elapsed += 5
+            $elapsed++
+
 
             # ------------------------------------------------------
-            # Check RDP service
+            # RDP SERVICE
             # ------------------------------------------------------
 
             $service = Get-Service `
@@ -534,7 +537,7 @@ jobs:
 
 
             # ------------------------------------------------------
-            # Check TCP 3389
+            # RDP PORT
             # ------------------------------------------------------
 
             $rdpPort = Get-NetTCPConnection `
@@ -550,13 +553,11 @@ jobs:
               Start-Service `
                 -Name TermService `
                 -ErrorAction SilentlyContinue
-
-              Start-Sleep -Seconds 3
             }
 
 
             # ------------------------------------------------------
-            # Check Bore
+            # BORE
             # ------------------------------------------------------
 
             $boreProcess = $null
@@ -570,10 +571,8 @@ jobs:
 
             if (-not $boreProcess) {
 
-              Write-Host ""
               Write-Host "[!] Bore tunnel stopped."
               Write-Host "[*] Reconnecting..."
-              Write-Host ""
 
               $newTunnel = Start-BoreTunnel
 
@@ -581,48 +580,18 @@ jobs:
 
                 $tunnel = $newTunnel
 
-                Write-Host ""
                 Write-Host "[OK] Bore reconnected."
                 Write-Host "[OK] NEW RDP ADDRESS: $($tunnel.Address)"
-                Write-Host ""
+
+              } else {
+
+                Write-Host "[!] Reconnect failed. Retrying..."
               }
-              else {
-
-                Write-Host "[!] Reconnect failed."
-                Write-Host "[*] Will retry..."
-              }
-            }
-
-
-            # ------------------------------------------------------
-            # STATUS EVERY 60 SECONDS
-            # ------------------------------------------------------
-
-            if ($elapsed -ge $nextStatus) {
-
-              $minutes = [math]::Floor($elapsed / 60)
-              $seconds = $elapsed % 60
-
-              Write-Host ""
-              Write-Host "=========================================="
-              Write-Host "RDP STATUS"
-              Write-Host "=========================================="
-              Write-Host "TIME    : $minutes min $seconds sec / 90 min"
-              Write-Host "ADDRESS : $($tunnel.Address)"
-              Write-Host "USER    : $env:RDP_USER"
-              Write-Host "PASSWORD: $env:RDP_PASS"
-              Write-Host "=========================================="
-              Write-Host ""
-
-              $nextStatus = $nextStatus + 60
             }
           }
 
           Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "       90 MINUTES COMPLETED"
-          Write-Host "=========================================="
-          Write-Host ""
+          Write-Host "[OK] 90-minute RDP session completed."
 
 
       # ============================================================
@@ -636,7 +605,6 @@ jobs:
 
           Write-Host "[*] Cleaning up..."
 
-          # Stop Bore processes
           Get-Process `
             -Name "bore" `
             -ErrorAction SilentlyContinue |
@@ -644,12 +612,10 @@ jobs:
               -Force `
               -ErrorAction SilentlyContinue
 
-          # Remove firewall rule
           Remove-NetFirewallRule `
             -DisplayName "GitHub Actions RDP" `
             -ErrorAction SilentlyContinue
 
-          # Remove temporary user
           Remove-LocalUser `
             -Name "Kenyuko" `
             -ErrorAction SilentlyContinue
